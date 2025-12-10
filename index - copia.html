@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Yudith | AR Love</title>
+    
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Face API -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <!-- Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+
+    <style>
+        body { background: black; overflow: hidden; font-family: 'Courier New', monospace; touch-action: none; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        
+        /* Video y Canvas ocupan toda la pantalla */
+        video, canvas { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            object-fit: cover; transform: scaleX(-1); /* Espejo */
+        }
+
+        /* UI Capa Superior */
+        .ui-layer { position: absolute; inset: 0; pointer-events: none; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; padding: 20px; }
+        
+        /* Marco de escaneo */
+        .scan-frame {
+            border: 2px solid rgba(0, 255, 255, 0.5);
+            flex-grow: 1; margin: 20px;
+            position: relative;
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.2);
+        }
+        .scan-line {
+            width: 100%; height: 2px; background: #00f3ff;
+            position: absolute; top: 0;
+            animation: scanning 3s linear infinite;
+            box-shadow: 0 0 10px #00f3ff;
+        }
+        @keyframes scanning { 0% { top: 0%; opacity: 0; } 50% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
+
+        /* Loader */
+        #loader {
+            position: fixed; inset: 0; background: #000; z-index: 50;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: #00f3ff; text-align: center; padding: 20px;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 4px solid #333; border-top: 4px solid #00f3ff;
+            border-radius: 50%; animation: spin 1s infinite linear; margin-bottom: 20px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #startBtn {
+            background: #00f3ff; color: #000; padding: 15px 40px; border: none; font-weight: bold;
+            font-size: 16px; border-radius: 50px; margin-top: 20px; cursor: pointer; display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- LOADER -->
+    <div id="loader">
+        <div class="spinner"></div>
+        <h2 id="status">CARGANDO IA...</h2>
+        <p class="text-xs text-gray-400 mt-2">Usa Safari (iPhone) o Chrome (Android)</p>
+        <button id="startBtn">ACTIVAR CÁMARA</button>
+        <div id="errorMsg" class="text-red-500 text-xs mt-4 px-4 hidden"></div>
+    </div>
+
+    <div id="container">
+        <!-- IMPORTANTE: playsinline es vital para iPhone -->
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="overlay"></canvas>
+
+        <div class="ui-layer">
+            <div class="text-center">
+                <div class="inline-block bg-black/60 px-4 py-1 rounded border border-cyan-500 text-cyan-400 text-xs font-bold tracking-widest">
+                    TARGET: YUDITH
+                </div>
+            </div>
+            
+            <div class="scan-frame">
+                <div class="scan-line"></div>
+                <!-- Esquinas -->
+                <div class="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-cyan-400"></div>
+                <div class="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyan-400"></div>
+                <div class="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyan-400"></div>
+                <div class="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-cyan-400"></div>
+            </div>
+
+            <div class="text-center text-cyan-400 text-shadow text-lg font-bold animate-pulse" id="actionText">
+                ESPERANDO ROSTRO...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('overlay');
+        const startBtn = document.getElementById('startBtn');
+        const loader = document.getElementById('loader');
+        const statusEl = document.getElementById('status');
+        const errorMsg = document.getElementById('errorMsg');
+        const actionText = document.getElementById('actionText');
+
+        // URL de Modelos
+        const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+        let particles = [];
+
+        // 1. Cargar Modelos
+        async function loadModels() {
+            try {
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
+                ]);
+                statusEl.innerText = "SISTEMA LISTO";
+                document.querySelector('.spinner').style.display = 'none';
+                startBtn.style.display = 'block';
+            } catch (err) {
+                showError("Error cargando IA. Revisa tu conexión.");
+            }
+        }
+        loadModels();
+
+        // 2. Iniciar Cámara con manejo de errores robusto
+        startBtn.addEventListener('click', async () => {
+            startBtn.innerText = "ACCEDIENDO...";
+            
+            try {
+                // Configuración específica para móviles
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                
+                video.srcObject = stream;
+                
+                // Esperar a que el video esté listo
+                video.onloadedmetadata = () => {
+                    video.play();
+                    loader.style.display = 'none';
+                    startTracking();
+                };
+            } catch (err) {
+                console.error(err);
+                if (window.location.protocol !== 'https:') {
+                    showError("⚠️ ERROR CRÍTICO: Debes usar HTTPS. Sube este código a GitHub Pages o Vercel.");
+                } else {
+                    showError("Permiso denegado. Reinicia el navegador y permite la cámara.");
+                }
+            }
+        });
+
+        function showError(msg) {
+            errorMsg.innerText = msg;
+            errorMsg.classList.remove('hidden');
+            startBtn.style.display = 'none';
+        }
+
+        // 3. Tracking Loop
+        function startTracking() {
+            const ctx = canvas.getContext('2d');
+            
+            // Ajustar canvas exactamente al tamaño visual del video en pantalla
+            function resizeCanvas() {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+            }
+            resizeCanvas();
+
+            setInterval(async () => {
+                // Detectar
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withFaceExpressions();
+
+                // Limpiar
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Redimensionar resultados
+                const dims = faceapi.matchDimensions(canvas, video, true);
+                const resized = faceapi.resizeResults(detections, dims);
+
+                if (resized.length > 0) {
+                    const det = resized[0];
+                    const landmarks = det.landmarks;
+                    
+                    // COORDENADAS OJOS
+                    const leftEye = landmarks.getLeftEye();
+                    const rightEye = landmarks.getRightEye();
+                    const lEyeCenter = getCenter(leftEye);
+                    const rEyeCenter = getCenter(rightEye);
+
+                    // EFECTO 1: HACKER BOX
+                    const box = det.detection.box;
+                    ctx.strokeStyle = '#00f3ff';
+                    ctx.lineWidth = 3;
+                    ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+                    // EFECTO 2: CORAZONES EN OJOS
+                    drawHeart(ctx, lEyeCenter.x, lEyeCenter.y);
+                    drawHeart(ctx, rEyeCenter.x, rEyeCenter.y);
+
+                    // EFECTO 3: SONRISA
+                    if (det.expressions.happy > 0.5) {
+                        actionText.innerText = "¡SONRISA HERMOSA! 😍";
+                        actionText.style.color = "#ff0055";
+                        createParticles(box.x + box.width/2, box.y, 5); // Partículas arriba de la cabeza
+                    } else {
+                        actionText.innerText = "ANALIZANDO...";
+                        actionText.style.color = "#00f3ff";
+                    }
+                } else {
+                    actionText.innerText = "BUSCANDO ROSTRO...";
+                }
+
+                updateParticles(ctx);
+
+            }, 100);
+        }
+
+        function getCenter(points) {
+            let x = 0, y = 0;
+            points.forEach(p => { x += p.x; y += p.y; });
+            return { x: x / points.length, y: y / points.length };
+        }
+
+        function drawHeart(ctx, x, y) {
+            ctx.font = "30px Arial";
+            ctx.fillStyle = "red";
+            ctx.textAlign = "center";
+            ctx.fillText("❤️", x, y);
+        }
+
+        // Partículas Simples
+        function createParticles(x, y, count) {
+            for(let i=0; i<count; i++) {
+                particles.push({
+                    x: x, y: y,
+                    vx: (Math.random() - 0.5) * 10,
+                    vy: (Math.random() - 1) * 10,
+                    life: 1,
+                    color: `hsl(${Math.random()*50 + 320}, 100%, 50%)`
+                });
+            }
+        }
+
+        function updateParticles(ctx) {
+            for(let i=0; i<particles.length; i++) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.05;
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = p.life;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 5, 0, Math.PI*2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                if(p.life <= 0) { particles.splice(i, 1); i--; }
+            }
+        }
+    </script>
+</body>
+</html>
